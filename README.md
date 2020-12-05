@@ -1,6 +1,9 @@
 # Hook SipJS
 React Hook para trabalhar com SipJS
 
+## Dependência:
+- [SipJs](https://sipjs.com/)
+
 ## Funcionalidades:
 
  - Realizar Chamada ✅
