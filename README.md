@@ -1,4 +1,4 @@
-# Hook SipJS
+# Sip Hook
 React Hook para trabalhar com SipJS
 
 ## Dependência:

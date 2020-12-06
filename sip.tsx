@@ -1,4 +1,10 @@
-import React, { createContext, useCallback, useContext, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from 'react';
 import {
   UserAgent,
   URI,
@@ -9,23 +15,26 @@ import {
   SessionState,
   Session,
 } from 'sip.js';
+import { SessionDescriptionHandler } from 'sip.js/lib/platform/web';
 
 interface SipCredentials {
   authorizationUsername: string;
   authorizationPassword: string;
   sipAccount: string;
   serverUrl: string;
+  idRemoteTag: string;
 }
 
 interface SipContextData {
   connect(credentials: SipCredentials): void;
   disconnect(): void;
-  call(destination: string): void;
+  call(): void;
   register(): void;
   answer(): void;
   hangup(): void;
+  setExternalNumber(number: string): void;
   stateExtension: string;
-  callerId: string;
+  externalNumber: string;
 }
 
 const SipContext = createContext<SipContextData>({} as SipContextData);
@@ -34,7 +43,8 @@ const SipProvider: React.FC = ({ children }) => {
   const [agent, setAgent] = useState<UserAgent>({} as UserAgent);
   const [stateExtension, setstateExtension] = useState('DISCONNECTED');
   const [server, setServer] = useState('');
-  const [callerId, setCallerId] = useState('');
+  const [externalNumber, setExternalNumber] = useState('');
+  const [remoteTag, setRemoteTag] = useState('');
   const [dialog, setDialog] = useState<Session>({} as Session);
 
   const onConnect = useCallback(() => {
@@ -50,9 +60,57 @@ const SipProvider: React.FC = ({ children }) => {
   }, []);
 
   const onInvite = useCallback((invitation: Invitation) => {
-    setCallerId(invitation.request.from.displayName);
+    setExternalNumber(invitation.request.from.displayName);
     setDialog(invitation);
   }, []);
+
+  const handleSetupMedia = useCallback(
+    (session: Session) => {
+      const mediaElement = document.getElementById(
+        remoteTag,
+      ) as HTMLMediaElement;
+      const remoteStream = new MediaStream();
+      try {
+        (session.sessionDescriptionHandler as SessionDescriptionHandler).peerConnection
+          ?.getReceivers()
+          .forEach(receive => {
+            if (receive.track) {
+              remoteStream.addTrack(receive.track);
+            }
+          });
+
+        mediaElement.srcObject = remoteStream;
+        mediaElement.play();
+      } catch (e) {
+        throw new Error(e);
+      }
+    },
+    [remoteTag],
+  );
+
+  const handleCleanMedia = useCallback(() => {
+    const mediaElement = document.getElementById(remoteTag) as HTMLMediaElement;
+    mediaElement.srcObject = null;
+    mediaElement.pause();
+  }, [remoteTag]);
+
+  useEffect(() => {
+    if (Object.values(dialog).length > 0) {
+      dialog.stateChange.addListener(newState => {
+        switch (newState) {
+          case SessionState.Established:
+            handleSetupMedia(dialog);
+            break;
+          case SessionState.Terminated:
+            setExternalNumber('');
+            handleCleanMedia();
+            break;
+          default:
+            break;
+        }
+      });
+    }
+  }, [dialog, handleSetupMedia, handleCleanMedia]);
 
   const connect = useCallback(
     async ({
@@ -60,16 +118,21 @@ const SipProvider: React.FC = ({ children }) => {
       authorizationUsername,
       sipAccount,
       serverUrl,
+      idRemoteTag,
     }: SipCredentials) => {
       const transportOptions = {
         server: serverUrl,
       };
 
+      setRemoteTag(idRemoteTag);
       const uri = UserAgent.makeURI(`sip:${sipAccount}`) || ({} as URI);
       const userAgentOptions: UserAgentOptions = {
         authorizationPassword,
         authorizationUsername,
         transportOptions,
+        sessionDescriptionHandlerFactoryOptions: {
+          constraints: { audio: true, video: false },
+        },
         delegate: {
           onConnect,
           onDisconnect,
@@ -89,17 +152,14 @@ const SipProvider: React.FC = ({ children }) => {
     [onConnect, onDisconnect, onRegister, onInvite],
   );
 
-  const call = useCallback(
-    destination => {
-      const target =
-        UserAgent.makeURI(`sip:${destination}@${server.split('//')[1]}`) ||
-        ({} as URI);
-      const inviter = new Inviter(agent, target);
-      inviter.invite();
-      setDialog(inviter);
-    },
-    [agent, server],
-  );
+  const call = useCallback(() => {
+    const target =
+      UserAgent.makeURI(`sip:${externalNumber}@${server.split('//')[1]}`) ||
+      ({} as URI);
+    const inviter = new Inviter(agent, target);
+    inviter.invite();
+    setDialog(inviter);
+  }, [agent, server, externalNumber]);
 
   const register = useCallback(() => {
     const registerAgent = new Registerer(agent);
@@ -124,12 +184,15 @@ const SipProvider: React.FC = ({ children }) => {
       case SessionState.Establishing:
         if (dialog instanceof Inviter) {
           dialog.cancel();
+          setExternalNumber('');
         } else {
           (dialog as Invitation).reject();
+          setExternalNumber('');
         }
         break;
       case SessionState.Established:
         await dialog.bye();
+        setExternalNumber('');
         break;
       case SessionState.Terminating:
       case SessionState.Terminated:
@@ -151,8 +214,9 @@ const SipProvider: React.FC = ({ children }) => {
         disconnect,
         hangup,
         answer,
+        setExternalNumber,
         stateExtension,
-        callerId,
+        externalNumber,
       }}
     >
       {children}
