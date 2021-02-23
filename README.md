@@ -15,5 +15,7 @@ React Hook para trabalhar com SipJS
 - Remover Chamada de Espera ❌
 - Chamada em Mudo ❌
 - Remover chamada do Mudo ❌
-- Envio DTMF ❌
- 
+- Envio DTMF ✅
+- Auto Atendimento ✅
+- Transferência 🚧
+
