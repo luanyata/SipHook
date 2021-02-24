@@ -6,11 +6,12 @@ React Hook para trabalhar com SipJS
 
 ## Funcionalidades:
 
- - Realizar Chamada ✅
- - Atende Chamada ✅
- - Desligar Chamada ✅
- - Recusar Chamada ✅
- - Identificação de Chamada ✅
+- Realizar Chamada ✅
+- Atende Chamada ✅
+- Desligar Chamada ✅
+- Recusar Chamada ✅
+- Identificação de Chamada ✅
+- Ramal Ocupado  ✅
 - Chamada em Espera ❌
 - Remover Chamada de Espera ❌
 - Chamada em Mudo ❌
