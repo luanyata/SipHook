@@ -18,6 +18,7 @@ import {
 import { SessionDescriptionHandler } from 'sip.js/lib/platform/web';
 import { endRing, startRing } from '../helpers/ring';
 
+type TypeTranfer = 'BLIND' | 'ATTENDED';
 interface SipCredentials {
   authorizationUsername: string;
   authorizationPassword: string;
@@ -36,6 +37,8 @@ interface SipContextData {
   dtmf(signalNumber: string, duration: number): void;
   setExternalNumber(number: string): void;
   setAutoAnswer(active: boolean): void;
+  transfer(destination: string, typeTranfer: TypeTranfer): void;
+  controlMicLocal(state: boolean): boolean;
   stateExtension: string;
   externalNumber: string;
   isReceivedCall: boolean;
@@ -52,7 +55,7 @@ const SipProvider: React.FC = ({ children }) => {
   const [externalNumber, setExternalNumber] = useState('');
   const [isReceivedCall, setIsReceivedCall] = useState(false);
   const [remoteTag, setRemoteTag] = useState('');
-  const [dialog, setDialog] = useState<Session>({} as Session);
+  const [session, setSession] = useState<Session>({} as Session);
   const [currentCall, setCurrentCall] = useState(false);
   const [autoAnswer, setAutoAnswer] = useState(false);
 
@@ -68,34 +71,45 @@ const SipProvider: React.FC = ({ children }) => {
     setStateExtension('REGISTERED');
   }, []);
 
-  const onInvite = useCallback((invitation: Invitation) => {
-    setExternalNumber(invitation.request.from.displayName);
-    setDialog(invitation);
-    setIsReceivedCall(true);
-    setCurrentCall(true);
-    startRing();
-  }, []);
+  const onInvite = useCallback(
+    (invitation: Invitation) => {
+      if (currentCall) {
+        invitation.reject({ statusCode: 486 });
+        return;
+      }
+
+      setExternalNumber(invitation.request.from.displayName);
+      setSession(invitation);
+
+      if (!autoAnswer) {
+        setIsReceivedCall(true);
+        startRing();
+      } else {
+        invitation.accept();
+      }
+
+      setCurrentCall(true);
+    },
+    [autoAnswer, currentCall],
+  );
 
   const handleSetupMedia = useCallback(
-    (session: Session) => {
+    (sessionCurrent: Session) => {
       const mediaElement = document.getElementById(
         remoteTag,
       ) as HTMLMediaElement;
       const remoteStream = new MediaStream();
-      try {
-        (session.sessionDescriptionHandler as SessionDescriptionHandler).peerConnection
-          ?.getReceivers()
-          .forEach(receive => {
-            if (receive.track) {
-              remoteStream.addTrack(receive.track);
-            }
-          });
 
-        mediaElement.srcObject = remoteStream;
-        mediaElement.play();
-      } catch (e) {
-        throw new Error(e);
-      }
+      (sessionCurrent.sessionDescriptionHandler as SessionDescriptionHandler).peerConnection
+        ?.getReceivers()
+        .forEach(receive => {
+          if (receive.track) {
+            remoteStream.addTrack(receive.track);
+          }
+        });
+
+      mediaElement.srcObject = remoteStream;
+      mediaElement.play();
     },
     [remoteTag],
   );
@@ -107,14 +121,14 @@ const SipProvider: React.FC = ({ children }) => {
   }, [remoteTag]);
 
   useEffect(() => {
-    if (Object.values(dialog).length > 0) {
-      dialog.stateChange.addListener(newState => {
+    if (Object.values(session).length > 0) {
+      session.stateChange.addListener(newState => {
         switch (newState) {
           case SessionState.Establishing:
             endRing();
             break;
           case SessionState.Established:
-            handleSetupMedia(dialog);
+            handleSetupMedia(session);
             break;
           case SessionState.Terminated:
             setExternalNumber('');
@@ -128,7 +142,7 @@ const SipProvider: React.FC = ({ children }) => {
         }
       });
     }
-  }, [dialog, handleSetupMedia, handleCleanMedia]);
+  }, [session, handleSetupMedia, handleCleanMedia]);
 
   const connect = useCallback(
     async ({
@@ -138,6 +152,8 @@ const SipProvider: React.FC = ({ children }) => {
       serverUrl,
       idRemoteTag,
     }: SipCredentials) => {
+      console.warn('de novo');
+
       const transportOptions = {
         server: serverUrl,
       };
@@ -151,6 +167,8 @@ const SipProvider: React.FC = ({ children }) => {
         sessionDescriptionHandlerFactoryOptions: {
           constraints: { audio: true, video: false },
         },
+        logBuiltinEnabled: true,
+
         delegate: {
           onConnect,
           onDisconnect,
@@ -167,7 +185,7 @@ const SipProvider: React.FC = ({ children }) => {
       setAgent(userAgent);
       register.register();
     },
-    [onConnect, onDisconnect, onRegister, onInvite],
+    [],
   );
 
   const call = useCallback(
@@ -178,15 +196,19 @@ const SipProvider: React.FC = ({ children }) => {
         ({} as URI);
       const inviter = new Inviter(agent, target);
       inviter.invite();
-      setDialog(inviter);
+      setSession(inviter);
       setCurrentCall(true);
     },
     [agent, server],
   );
 
   const register = useCallback(() => {
-    const registerAgent = new Registerer(agent);
-    registerAgent.register().then(() => setStateExtension('CONNECTED'));
+    try {
+      const registerAgent = new Registerer(agent);
+      registerAgent.register().then(() => setStateExtension('CONNECTED'));
+    } catch (e) {
+      setStateExtension('DISCONNECTED');
+    }
   }, [agent]);
 
   const unregister = useCallback(() => {
@@ -197,9 +219,7 @@ const SipProvider: React.FC = ({ children }) => {
     });
   }, [agent]);
 
-  const answer = useCallback(() => {
-    autoAnswer && (dialog as Invitation).accept();
-  }, [dialog, autoAnswer]);
+  const answer = useCallback(() => (session as Invitation).accept(), [session]);
 
   //TODO Hold
   const hold = useCallback(() => {
@@ -211,25 +231,42 @@ const SipProvider: React.FC = ({ children }) => {
     throw new Error('Not Implemented');
   }, []);
 
-  //TODO Mute
-  const mute = useCallback(() => {
-    throw new Error('Not Implemented');
-  }, []);
+  const controlMicLocal = useCallback(
+    (state: boolean): boolean => {
+      const pc = (session.sessionDescriptionHandler as SessionDescriptionHandler)
+        .peerConnection;
 
-  //TODO UnMute
-  const unmute = useCallback(() => {
-    throw new Error('Not Implemented');
-  }, []);
+      if (pc) {
+        pc.getReceivers().forEach(receive => {
+          receive.track.enabled = state;
+        });
+        return true;
+      }
+      return false;
+    },
+    [session],
+  );
 
   //TODO Renegociacao em queda do WSS
   const renegotiation = useCallback(() => {
     throw new Error('Not Implemented');
   }, []);
 
-  //TODO Transferencia cega e assitida
-  const transfer = useCallback(() => {
-    throw new Error('Not Implemented');
-  }, []);
+  const transfer = useCallback(
+    (destination: string, typeTranfer: TypeTranfer) => {
+      const target =
+        UserAgent.makeURI(`sip:${destination}@${server.split('//')[1]}`) ||
+        ({} as URI);
+
+      if (typeTranfer === 'BLIND') {
+        session.refer(target);
+      } else {
+        const replacementSession = new Inviter(agent, target);
+        session.refer(replacementSession);
+      }
+    },
+    [session, server, agent],
+  );
 
   const dtmf = useCallback(
     async (signalNumber: string, duration: number) => {
@@ -243,37 +280,39 @@ const SipProvider: React.FC = ({ children }) => {
         },
       };
 
-      dialog.info(options);
+      session.info(options);
     },
-    [dialog],
+    [session],
   );
 
   const hangup = useCallback(async () => {
-    switch (dialog.state) {
+    switch (session.state) {
       case SessionState.Initial:
       case SessionState.Establishing:
-        if (dialog instanceof Inviter) {
-          dialog.cancel();
+        if (session instanceof Inviter) {
+          session.cancel();
+        }
+        break;
+      case SessionState.Established:
+        if (session instanceof Inviter) {
+          session.bye();
           setExternalNumber('');
-          setIsReceivedCall(false);
           setCurrentCall(false);
           endRing();
         } else {
-          (dialog as Invitation).reject();
+          (session as Invitation).reject();
           setExternalNumber('');
           setIsReceivedCall(false);
           setCurrentCall(false);
           endRing();
         }
         break;
-      case SessionState.Established:
-        await dialog.bye();
+      case SessionState.Terminating:
+      case SessionState.Terminated:
+        await session.bye();
         setExternalNumber('');
         setCurrentCall(false);
         setIsReceivedCall(false);
-        break;
-      case SessionState.Terminating:
-      case SessionState.Terminated:
         throw new Error(
           'Cannot terminate a session that is already terminated',
         );
@@ -281,7 +320,7 @@ const SipProvider: React.FC = ({ children }) => {
       default:
         break;
     }
-  }, [dialog]);
+  }, [session]);
 
   return (
     <SipContext.Provider
@@ -291,10 +330,12 @@ const SipProvider: React.FC = ({ children }) => {
         call,
         dtmf,
         unregister,
+        transfer,
         hangup,
         answer,
         setExternalNumber,
         setAutoAnswer,
+        controlMicLocal,
         stateExtension,
         externalNumber,
         isReceivedCall,
